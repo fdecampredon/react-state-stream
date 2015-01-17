@@ -57,20 +57,10 @@ var App1 = React.createClass({
     }));
     
     return Rx.Observable.combineLatest(
-      Rx.Observable.generate(
-        0,
-        function () { return true; },
-        function (deg) {
-          return deg + 1;
-        },
-        function (deg) {
-          return deg * -2;
-        },
-        Rx.Scheduler.requestAnimationFrame
-      ),
+      Rx.Observable.range(0, Infinity, Rx.Scheduler.requestAnimationFrame),
       childTurnLeft, 
       function (deg, childTurnLeft) {
-        return {deg: deg, childTurnLeft: childTurnLeft};
+        return {deg: deg * -2, childTurnLeft: childTurnLeft};
       }
     );
   },
