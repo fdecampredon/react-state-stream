@@ -1,56 +1,62 @@
 /*global -React */
 var React = require('react');
-var M = require('mori');
+//var M = require('mori');
 var stateStream = require('../stateStream');
 var easingTypes = require('../easingTypes');
 var tweenMixin = require('./tweenMixin');
+var update = require('react/lib/update');
 
+var RxReact = require('rx-react/browser');
+var Rx = require('rx');
+require('../rx-dom');
 var ease = easingTypes.easeInOutQuad;
 
 var App2 = React.createClass({
-  mixins: [stateStream.Mixin, tweenMixin],
-  getInitialStateStream: function() {
-    return M.repeat(1, M.js_to_clj({
+  mixins: [RxReact.StateStreamMixin, tweenMixin],
+  getStateStream: function() {
+    
+    this.handleClick = RxReact.EventHandler.create();
+    var self = this;
+    return Rx.Observable.of({
       blockX: [0, 0, 0],
       goingLeft: false,
-    }));
+    })
+    .concat(
+      this.handleClick
+      .flatMapLatest(function () {
+        var duration = 1000;
+        var frameCount = stateStream.toFrameCount(duration);
+        var initState = self.state;
+        var start = initState.goingLeft ? 400 : 0;
+        var dest = initState.goingLeft ? 0 : 400;
+
+        return Rx.Observable.range(0, frameCount, Rx.Scheduler.requestAnimationFrame)
+        .map(function (i) {
+          var ms = stateStream.toMs(i);
+          return {
+            blockX: {
+              0: {
+                $set: ease(ms, start, dest, duration)
+              },
+              1: {
+                $set: ease(ms, initState.blockX[1], dest, duration)
+              },
+              2: {
+                $set: ease(ms, initState.blockX[2], dest, duration)
+              }
+            },
+            goingLeft: {
+              $set: !initState.goingLeft
+            }
+          };
+        });
+      })
+      .map(function (spec) {
+        return update(self.state, spec);
+      })
+    );
   },
 
-  handleClick: function() {
-    var duration = 1000;
-    var frameCount = stateStream.toFrameCount(duration);
-    var initState = this.state;
-    var start = initState.goingLeft ? 400 : 0;
-    var dest = initState.goingLeft ? 0 : 400;
-
-    var newStream = M.map(function(stateI) {
-      return M.assoc(stateI, 'goingLeft', !initState.goingLeft);
-    }, this.stream);
-
-    newStream = this.mapState(newStream, duration, function(stateI, ms) {
-      return M.assoc_in(
-        stateI,
-        ['blockX', 0],
-        ease(ms, start, dest, duration)
-      );
-    });
-
-    newStream = this.mapState(newStream, duration, function(stateI, ms) {
-      return M.assoc_in(
-        stateI,
-        ['blockX', 1],
-        ease(ms, initState.blockX[1], dest, duration)
-      );
-    });
-
-    // TODO: get a better APi. For everything actually
-    newStream = this.tweenState(newStream, duration, ['blockX', 2], {
-      endValue: dest,
-      easingFunction: ease,
-    });
-
-    this.setStateStream(newStream);
-  },
 
   render: function() {
     var s1 = {
