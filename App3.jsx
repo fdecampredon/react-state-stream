@@ -1,8 +1,14 @@
 /*global -React */
 var React = require('react');
-var M = require('mori');
 var stateStream = require('./stateStream');
 var easingTypes = require('./easingTypes');
+
+var RxReact = require('rx-react/browser');
+var Rx = require('rx');
+var update = require('react/lib/update');
+var assign = require('object-assign');
+require('./rx-dom');
+
 
 function toObj(children) {
   return React.Children.map(children, function(child) {
@@ -25,8 +31,9 @@ function diff(o1, o2) {
 }
 
 var Container = React.createClass({
-  mixins: [stateStream.Mixin],
-  getInitialStateStream: function() {
+  mixins: [RxReact.LifecycleMixin, RxReact.StateStreamMixin],
+  getStateStream: function() {
+    
     var children = toObj(this.props.children);
     var configs = {};
     for (var key in children) {
@@ -36,99 +43,116 @@ var Container = React.createClass({
       configs[key] = {
         left: 0,
         height: 60,
-        opacity: 1,
+        opacity: 1
       };
     }
-
-    return M.repeat(1, M.js_to_clj({
+    
+    var self = this;
+    
+    return Rx.Observable
+    .of({
       children: children,
       configs: configs,
-    }));
+    })
+    .merge(
+      this.lifecycle.componentWillUpdate
+      .map(function (descr) {
+        var children = toObj(descr.nextProps.children);
+        var oldChildren = toObj(self.props.children);
+
+        return {
+          enters: diff(children, oldChildren),
+          exits: diff(oldChildren, children),
+          children: children 
+        };
+      })
+      .filter(function (descr) {
+        return descr.exits.length !== 0 || descr.enters.length !== 0;
+      })
+      .flatMap(function (descr) {
+        var exits = descr.exits;
+        var enters = descr.enters;
+        var children = descr.children;
+        
+        var duration = 700;
+        var frameCount = stateStream.toFrameCount(duration);
+        var initState = self.state;
+
+        if (exits.length > 0) {
+          
+          return Rx.Observable.range(0, frameCount, Rx.Scheduler.requestAnimationFrame)
+          .map(function (i) {
+            var spec = { configs : {} };
+            exits.forEach(function (exitKey) {
+              var ms = stateStream.toMs(i);
+              var config = initState.configs[exitKey];
+              spec.configs[exitKey] = {
+                $set: {
+                  left: easingTypes.easeInOutQuad(ms, config.left, -200, duration),
+                  opacity: easingTypes.easeInOutQuad(ms, config.opacity, 0, duration),
+                  height: easingTypes.easeInOutQuad(ms, config.height, 0, duration)
+                }
+              };
+            });
+            return spec;
+          })
+          .concat(Rx.Observable.of({
+            children: {
+              $set: children
+            },
+            configs: {
+              $set: exits.reduce(function (configs, exitKey) {
+                delete configs[exitKey];
+                return configs;
+              }, assign({}, initState.configs))
+            }
+          }));
+        }
+        
+
+        if (enters.length > 0) {
+          
+          return Rx.Observable.range(0, frameCount, Rx.Scheduler.requestAnimationFrame)
+          .map(function (i) {
+            var spec = { 
+              configs : {},  
+              children: {
+                $set: children
+              }
+            };
+            enters.forEach(function(exitKey) {
+              var ms = stateStream.toMs(i);
+              var config = initState.configs[exitKey];
+              spec.configs[exitKey] = {
+                $set: {
+                  left: easingTypes.easeInOutQuad(ms, config.left, 0, duration),
+                  opacity: easingTypes.easeInOutQuad(ms, config.opacity, 1, duration),
+                  height: easingTypes.easeInOutQuad(ms, config.height, 60, duration)
+                }
+              };
+            });
+            return spec;
+          })
+          .concat(Rx.Observable.of({
+            configs: {
+              $set: enters.reduce(function (configs, enterKey) {
+                configs[enterKey] = {
+                    left: 0,
+                    height: 60,
+                    opacity: 1
+                };
+                return configs;
+              }, assign({}, initState.configs))
+            }
+          }));
+        }
+      })
+      .map(function (spec) {
+        return update(self.state, spec);
+      })
+    );
   },
 
-  componentWillUpdate: function(nextProps) {
-    var o1 = toObj(nextProps.children);
-    var o2 = toObj(this.props.children);
-    var enters = diff(o1, o2);
-    var exits = diff(o2, o1);
-
-    if (exits.length === 0 && enters.length === 0) {
-      return;
-    }
-
-    var children = M.js_to_clj(toObj(nextProps.children));
-    var duration = 700;
-    var frameCount = stateStream.toFrameCount(duration);
-    var initState = this.state;
-    var newStream = stateStream.extendTo(frameCount + 1, this.stream);
-
-    if (exits.length > 0) {
-
-      var chunk = M.map(function(stateI, i) {
-        exits.forEach(function(exitKey) {
-          var ms = stateStream.toMs(i);
-          var config = initState.configs[exitKey];
-
-          stateI = M.assoc_in(stateI, ['configs', exitKey], M.hash_map(
-            'left', easingTypes.easeInOutQuad(ms, config.left, -200, duration),
-            'opacity', easingTypes.easeInOutQuad(ms, config.opacity, 0, duration),
-            'height', easingTypes.easeInOutQuad(ms, config.height, 0, duration)
-          ));
-        });
-
-        return stateI;
-      }, M.take(frameCount, newStream), M.range());
-
-      var restChunk = M.map(function(stateI) {
-        exits.forEach(function(exitKey) {
-          stateI = M.assoc(
-            stateI,
-            'children', children,
-            'configs', M.dissoc(M.get(stateI, 'configs'), exitKey)
-          );
-        });
-
-        return stateI;
-      }, M.drop(frameCount, newStream));
-
-      newStream = M.concat(chunk, restChunk);
-    }
-
-    if (enters.length > 0) {
-      var chunk2 = M.map(function(stateI, i) {
-        enters.forEach(function(enterKey) {
-          var ms = stateStream.toMs(i);
-          var config = initState.configs[enterKey];
-
-          stateI = M.assoc_in(stateI, ['configs', enterKey], M.hash_map(
-            'left', easingTypes.easeInOutQuad(ms, config.left, 0, duration),
-            'opacity', easingTypes.easeInOutQuad(ms, config.opacity, 1, duration),
-            'height', easingTypes.easeInOutQuad(ms, config.height, 60, duration)
-          ));
-          stateI = M.assoc(stateI, 'children', children);
-        });
-
-        return stateI;
-      }, M.take(frameCount, newStream), M.range());
-
-      var restChunk2 = M.map(function(stateI) {
-        enters.forEach(function(enterKey) {
-          stateI = M.assoc_in(stateI, ['configs', enterKey], M.hash_map(
-            'left', 0,
-            'height', 60,
-            'opacity', 1
-          ));
-          stateI = M.assoc(stateI, 'children', children);
-        });
-
-        return stateI;
-      }, M.drop(frameCount, newStream));
-
-      newStream = M.concat(chunk2, restChunk2);
-    }
-
-    this.setStateStream(newStream);
-  },
 
   render: function() {
     var state = this.state;

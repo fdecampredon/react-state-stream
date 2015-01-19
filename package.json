@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "mori": "^0.2.9",
+    "object-assign": "^2.0.0",
     "react": "^0.12.2",
     "rx": "^2.3.24",
     "rx-dom": "^4.0.3",
